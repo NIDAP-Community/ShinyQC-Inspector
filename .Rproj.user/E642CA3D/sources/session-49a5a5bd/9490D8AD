@@ -1,0 +1,26 @@
+{
+    "id": "9490D8AD",
+    "path": "~/GitHub/Maggie/IODC/ShinyQC_Inspector/app.R",
+    "project_path": "app.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1730312169106.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "16,14",
+        "scrollLine": "15"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1730313075,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1730313075776,
+    "read_only": false,
+    "read_only_alternatives": []
+}

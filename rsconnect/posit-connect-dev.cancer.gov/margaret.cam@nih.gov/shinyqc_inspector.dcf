@@ -1,0 +1,12 @@
+name: shinyqc_inspector
+title: ShinyQC_Inspector
+username: margaret.cam@nih.gov
+account: margaret.cam@nih.gov
+server: posit-connect-dev.cancer.gov
+hostUrl: https://posit-connect-dev.cancer.gov/__api__
+appId: 170
+bundleId: 322
+url: https://posit-connect-dev.cancer.gov/content/8851934b-c19d-4f51-8fc8-61d53cf4fb81/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
