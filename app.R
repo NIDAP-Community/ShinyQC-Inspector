@@ -58,15 +58,18 @@ ui <- fluidPage(
     column(width = 12,
            fileInput("file1", "Choose File for Normalized Gene Expression Data", accept = ".tsv,.csv,.txt"),
            fileInput("file2", "Choose File for Sample Metadata", accept = ".csv,.tsv,.txt"),
-           fileInput("file3", "Choose File for QC Metadata", accept = ".csv,.tsv,.txt"),
+           fileInput("file3", "Choose File for QC Metadata (Optional - leave empty if already merged with Sample Metadata)", accept = ".csv,.tsv,.txt"),
            actionButton("read_data", "Read Data"),
-           div(class = 'multicol',
+             div(class = 'multicol',
                checkboxGroupInput("vars", "Select Columns:", choices = NULL)
-           ),
+             ),
+             actionButton("uncheck_all", "Uncheck All"),
+           sliderInput("pca_dot_size", "PCA dot size:", min = 0.5, max = 5, value = 1, step = 0.25),
            selectInput("col_file2", "Select sample column from Sample Metadata:", choices = NULL),
            selectInput("col_file3", "Select sample column from QC Metadata:", choices = NULL),
            actionButton("submit", "Run Analysis"),
-           downloadButton('downloadData', 'Download selected samples')
+           downloadButton('downloadData', 'Download selected samples'),
+           downloadButton('downloadPDF', 'Save PCA as PDF')
     )
   ),
   uiOutput("dynamic_plots")
@@ -96,8 +99,97 @@ server <- function(input, output, session) {
   Column_Names <- reactiveVal()
   Selected_Cols <- reactiveVal()
   
+  # Reactive values to store PCA results for PDF export
+  pca_results <- reactiveVal()
+  pca_df_base <- reactiveVal()
+  Sample_df <- reactiveVal()
+  col_file3_val <- reactiveVal()
+  
+  # Function to create static ggplot for PDF export (outside observeEvent)
+  plotPCA_static <- function(qc){
+    
+    req(Sample_df(), pca_df_base(), pca_results())
+    
+    Sample.df <- Sample_df()
+    pca.df <- pca_df_base()
+    pca <- pca_results()
+    col_file3 <- col_file3_val()
+    
+    validate(
+      need(qc %in% names(Sample.df), paste0("Column not found after merge: ", qc))
+    )
+    
+    pca.df$variable <- Sample.df[[qc]]
+    pca.df$sample <- Sample.df[[col_file3]]
+    pca.df$name <- qc
+    pca.df <- pca.df %>% arrange(variable) 
+    
+    plotcolors <- c("darkred","cadetblue","coral","deeppink",
+                    "darkblue","darkgoldenrod","darkolivegreen3", "dodgerblue", 
+                    "darkorange", "forestgreen", "firebrick", "orchid",
+                    "gold", "mediumturquoise", "saddlebrown", "darkviolet", "lightcoral",
+                    "limegreen", "deepskyblue", "tomato", "mediumslateblue", "darkgoldenrod",
+                    "mediumseagreen", "lightsalmon", "darkolivegreen", "mediumpurple", "sienna")
+    
+    num_groups <- length(unique(pca.df$variable))
+    
+    generateColors <- function(n) {
+      hues <- seq(0, 1, length.out = n + 1)
+      colors <- hsv(h = hues[1:n], s = 0.6, v = 0.9)
+      return(colors)
+    }
+    
+    if (num_groups > length(plotcolors)) {
+      colnum <- num_groups - length(plotcolors)
+      colors <- generateColors(colnum)
+      plotcolors <- c(plotcolors, colors)
+    }
+    
+    perc.var <- (pca$sdev^2/sum(pca$sdev^2))*100
+    pc.x.lab <- paste0("PC1 ", round(perc.var[1], 2),"%")
+    pc.y.lab <- paste0("PC2 ", round(perc.var[2], 2),"%")
+    
+    if(class(pca.df$variable) %in% c("factor","character")){
+      p <- ggplot(pca.df, aes(x=PC1, y=PC2)) + 
+        theme_bw() + 
+        theme(strip.text = element_text(size = 20, color = "white"),
+                strip.background = element_rect(fill = "blue"),
+                legend.title=element_blank(),
+                legend.position="right",
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.background = element_blank()) +
+        xlab(pc.x.lab) + ylab(pc.y.lab) +
+        geom_point(aes(color=variable), size=input$pca_dot_size) +
+        scale_colour_manual(values = plotcolors) +
+        facet_wrap(~name)
+      return(p)
+    } else {
+      p <- ggplot(pca.df, aes(x=PC1, y=PC2)) +
+        theme_bw() + 
+        theme(strip.text = element_text(size = 20,color = "white"),
+                strip.background = element_rect(fill = "blue"),
+                legend.title=element_blank(),
+                legend.position="bottom",
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.background = element_blank()) +
+        xlab(pc.x.lab) + ylab(pc.y.lab) +
+        geom_point(aes(color=variable), size=input$pca_dot_size) +
+        scale_color_gradient2(low = "#2b83ba", 
+                              mid = "grey",
+                              high = "#d7191c", 
+                              midpoint = median(pca.df$variable),
+                              limits = c(min(pca.df$variable), 
+                                         max(pca.df$variable)),
+                              oob = scales::squish) +
+        facet_wrap(~name)
+      return(p)
+    }
+  }
+  
   observeEvent(input$read_data, {
-    req(input$file1, input$file2, input$file3)
+    req(input$file1, input$file2)
     
     withProgress(message = 'Reading files...', value = 0, {
       progress <- shiny::Progress$new()
@@ -124,25 +216,36 @@ server <- function(input, output, session) {
       updateSelectInput(session, "col_file2", choices = names(meta_data))
       progress$inc(1/3, "Finished reading Meta Data")
       
-      samp_info <- read_data_file(input$file3$datapath)
-      updateSelectInput(session, "col_file3", choices = names(samp_info))
-      progress$inc(1/3, "Finished reading QC Metadata")
+      # Check if QC Metadata file is provided
+      if (!is.null(input$file3)) {
+        samp_info <- read_data_file(input$file3$datapath)
+        updateSelectInput(session, "col_file3", choices = names(samp_info))
+        progress$inc(1/3, "Finished reading QC Metadata")
+        Sampinfo(samp_info)
+        
+        # Extract column names from both metadata files
+        # Use unique() to avoid duplicate column names in checkbox choices
+        column_names <- unique(c(colnames(meta_data), colnames(samp_info)))
+        selected_cols <- colnames(samp_info)
+      } else {
+        # No separate QC metadata - use sample metadata for everything
+        Sampinfo(NULL)
+        updateSelectInput(session, "col_file3", choices = NULL)
+        progress$inc(1/3, "No QC Metadata provided - using Sample Metadata only")
+        
+        # Extract column names from sample metadata only
+        column_names <- colnames(meta_data)
+        selected_cols <- column_names
+      }
       
       # Store read data in reactive variables
-      # Assuming you have defined these reactive variables somewhere in your app
       Metadata(meta_data)
-      Sampinfo(samp_info)
       Normalized_Counts(nc)
       
       on.exit(progress$close())
     })
     
-    # Extract column names
-    column_names <- c(colnames(Metadata()), colnames(Sampinfo()))
     print(column_names)
-    
-    # List columns you want to preselect
-    selected_cols <- colnames(Sampinfo())
     
     # Update the UI choices
     # updateCheckboxGroupInput(session, 
@@ -169,12 +272,24 @@ server <- function(input, output, session) {
     col_file3 <- input$col_file3   # QC metadata
     met.filt <-  Metadata() %>% filter(.data[[col_file2]] %in% samples) 
     
-  
-    Sample.df <- merge(Sampinfo(), met.filt, 
-                       by.x = col_file3, by.y = col_file2)
-    Sample.df <- Sample.df %>% filter(.data[[col_file3]] %in% samples) %>%
-      arrange(match(.data[[col_file3]], samples))
-    edf.filt <- edf.filt %>% select(Sample.df[[col_file3]])
+    # Check if we have separate QC metadata or merged metadata
+    if (!is.null(Sampinfo())) {
+      # Separate metadata files - merge them
+      Sample.df <- merge(Sampinfo(), met.filt, 
+                         by.x = col_file3, by.y = col_file2)
+      # Remove duplicate columns that may result from merge
+      Sample.df <- Sample.df[, !duplicated(names(Sample.df))]
+      Sample.df <- Sample.df %>% filter(.data[[col_file3]] %in% samples) %>%
+        arrange(match(.data[[col_file3]], samples))
+      edf.filt <- edf.filt %>% select(Sample.df[[col_file3]])
+    } else {
+      # Already merged metadata - use as is
+      Sample.df <- met.filt %>% 
+        filter(.data[[col_file2]] %in% samples) %>%
+        arrange(match(.data[[col_file2]], samples))
+      edf.filt <- edf.filt %>% select(Sample.df[[col_file2]])
+      col_file3 <- col_file2  # Use same column for sample identification
+    }
     head(edf.filt)
     tedf <- t(edf.filt)
     tedf <- tedf[, colSums(is.na(tedf)) != nrow(tedf)]
@@ -195,11 +310,20 @@ server <- function(input, output, session) {
     pca.df$sample <- rownames(pca.df)
     print(head(pca.df))
     
+    # Store PCA results and Sample.df for PDF export
+    pca_results(pca)
+    pca_df_base(pca.df)
+    Sample_df(Sample.df)
+    col_file3_val(col_file3)
+    
     # Define a function to plot PCA
     
     plotPCA <- function(qc){
       
       req(input$vars) # Ensure variable is available
+      validate(
+        need(qc %in% names(Sample.df), paste0("Column not found after merge: ", qc))
+      )
       
       pca.df$variable <- Sample.df[[qc]]
       pca.df$sample <- Sample.df[[col_file3]]
@@ -239,12 +363,12 @@ server <- function(input, output, session) {
           theme(strip.text = element_text(size = 20, color = "white"),
                 strip.background = element_rect(fill = "blue"),
                 legend.title=element_blank(),
-                legend.position="right",
+                legend.position="bottom",
                 panel.grid.major = element_blank(),
                 panel.grid.minor = element_blank(),
                 panel.background = element_blank()) +
           xlab(pc.x.lab) + ylab(pc.y.lab) +
-          geom_point(aes(color=variable), size=1) +
+              geom_point(aes(color=variable), size=input$pca_dot_size) +
           scale_colour_manual(values = plotcolors) +
           facet_wrap(~name)
         
@@ -268,7 +392,7 @@ server <- function(input, output, session) {
                                 panel.grid.minor = element_blank(),
                                 panel.background = element_blank()) +
                           xlab(pc.x.lab) + ylab(pc.y.lab) +
-                          geom_point(aes(color=variable), size=1) +
+                            geom_point(aes(color=variable), size=input$pca_dot_size) +
                           scale_color_gradient2(low = "#2b83ba", 
                                                 mid = "grey",
                                                 high = "#d7191c", 
@@ -287,24 +411,16 @@ server <- function(input, output, session) {
     output$dynamic_plots <- renderUI({
       req(input$vars)
       
-      # Create a list of plotly outputs
-      plots_output_list <- lapply(input$vars, function(var) {
-        plotlyOutput(paste0("plot_", var))
+      # Create a list of tabPanels, one for each selected variable
+      tab_list <- lapply(input$vars, function(var) {
+        tabPanel(
+          title = var,
+          plotlyOutput(paste0("plot_", var), height = "600px")
+        )
       })
       
-      # Break plots list into chunks and put each chunk in a column
-      num_plots <- length(plots_output_list)
-      num_cols <- 3
-      plots_per_col <- ceiling(num_plots / num_cols)
-      
-      columns <- lapply(1:num_cols, function(col_num) {
-        start_idx = ((col_num-1) * plots_per_col) + 1
-        end_idx = min(col_num * plots_per_col, num_plots)
-        column(4, plots_output_list[start_idx:end_idx])
-      })
-      
-      # Return the organized columns to the UI
-      do.call(fluidRow, columns)
+      # Return the tabsetPanel with all tabs
+      do.call(tabsetPanel, c(list(id = "pca_tabs"), tab_list))
     })
     
     
@@ -364,6 +480,39 @@ server <- function(input, output, session) {
     )
     
   })
+
+  observeEvent(input$uncheck_all, {
+    updateCheckboxGroupInput(session, "vars", selected = character(0))
+  })
+  
+  # Download handler for PDF
+  output$downloadPDF <- downloadHandler(
+    filename = function() {
+      paste("PCA_plots_", Sys.Date(), ".pdf", sep = "")
+    },
+    content = function(file) {
+      req(input$vars, pca_results(), Sample_df())
+      
+      # Create PDF with all plots
+      pdf(file, width = 11, height = 8.5)
+      
+      withProgress(message = 'Generating PDF...', value = 0, {
+        n <- length(input$vars)
+        for(i in seq_along(input$vars)) {
+          var <- input$vars[i]
+          tryCatch({
+            p <- plotPCA_static(var)
+            print(p)
+          }, error = function(e) {
+            message(paste("Error plotting", var, ":", e$message))
+          })
+          incProgress(1/n, detail = paste("Processing", var))
+        }
+      })
+      
+      dev.off()
+    }
+  )
 }
 
 # Run the application 
